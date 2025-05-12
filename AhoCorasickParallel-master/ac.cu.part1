@@ -1,0 +1,44 @@
+#include "ac.h"
+
+cudaTextureObject_t tex_state_final;
+cudaTextureObject_t tex_dfa;
+cudaTextureObject_t tex_fail_state;
+
+__global__ void profanity_filter_cuda(int* dfa, int* fail_state, unsigned char* sequences, bool* valid_state, int offset, int num_sequences, int seq_length) {
+    int num_sequences_per_block = num_sequences / gridDim.x;
+    int num_sequences_per_thread = num_sequences / (gridDim.x * blockDim.x);
+
+    int start = blockIdx.x * num_sequences_per_block + threadIdx.x * num_sequences_per_thread;
+    int start_ptr = start * seq_length;
+
+    int curr_state = 0;
+    int idx = 0;
+    int r_idx = 0;
+    unsigned char base;
+
+    while (r_idx < num_sequences_per_thread && (start + r_idx) < num_sequences) {
+        base = sequences[start_ptr + (r_idx * seq_length) + idx++];
+
+        if (base == '\n') {
+            r_idx += 1;
+            curr_state = 0;
+            idx = 0;
+            continue;
+        }
+
+        int ord = get_state_as_int(base);
+        if (ord < 0) continue;
+
+        while (curr_state != 0 && tex1Dfetch<int>(tex_dfa, curr_state * NUM_COLS + ord) == 0) {
+            curr_state = tex1Dfetch<int>(tex_fail_state, curr_state);
+        }
+
+        if (curr_state != 0 || tex1Dfetch<int>(tex_dfa, curr_state * NUM_COLS + ord) != 0) {
+            curr_state = tex1Dfetch<int>(tex_dfa, curr_state * NUM_COLS + ord);
+            if (tex1Dfetch<int>(tex_state_final, curr_state)) {
+                valid_state[start + r_idx] = true;
+                break;
+            }
+        }
+    }
+}
